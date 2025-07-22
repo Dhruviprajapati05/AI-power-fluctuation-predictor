@@ -1,143 +1,182 @@
-from __future__ import absolute_import
-
+"""Download files with progress indicators.
+"""
+import cgi
 import logging
+import mimetypes
 import os
 
-from pip._internal.cli import cmdoptions
-from pip._internal.cli.cmdoptions import make_target_python
-from pip._internal.cli.req_command import RequirementCommand, with_cleanup
-from pip._internal.cli.status_codes import SUCCESS
-from pip._internal.req.req_tracker import get_requirement_tracker
-from pip._internal.utils.misc import ensure_dir, normalize_path, write_output
-from pip._internal.utils.temp_dir import TempDirectory
+from pip._vendor.requests.models import CONTENT_CHUNK_SIZE
+
+from pip._internal.cli.progress_bars import DownloadProgressProvider
+from pip._internal.exceptions import NetworkConnectionError
+from pip._internal.models.index import PyPI
+from pip._internal.network.cache import is_from_cache
+from pip._internal.network.utils import (
+    HEADERS,
+    raise_for_status,
+    response_chunks,
+)
+from pip._internal.utils.misc import (
+    format_size,
+    redact_auth_from_url,
+    splitext,
+)
 from pip._internal.utils.typing import MYPY_CHECK_RUNNING
 
 if MYPY_CHECK_RUNNING:
-    from optparse import Values
-    from typing import List
+    from typing import Iterable, Optional
+
+    from pip._vendor.requests.models import Response
+
+    from pip._internal.models.link import Link
+    from pip._internal.network.session import PipSession
 
 logger = logging.getLogger(__name__)
 
 
-class DownloadCommand(RequirementCommand):
+def _get_http_response_size(resp):
+    # type: (Response) -> Optional[int]
+    try:
+        return int(resp.headers['content-length'])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def _prepare_download(
+    resp,  # type: Response
+    link,  # type: Link
+    progress_bar  # type: str
+):
+    # type: (...) -> Iterable[bytes]
+    total_length = _get_http_response_size(resp)
+
+    if link.netloc == PyPI.file_storage_domain:
+        url = link.show_url
+    else:
+        url = link.url_without_fragment
+
+    logged_url = redact_auth_from_url(url)
+
+    if total_length:
+        logged_url = '{} ({})'.format(logged_url, format_size(total_length))
+
+    if is_from_cache(resp):
+        logger.info("Using cached %s", logged_url)
+    else:
+        logger.info("Downloading %s", logged_url)
+
+    if logger.getEffectiveLevel() > logging.INFO:
+        show_progress = False
+    elif is_from_cache(resp):
+        show_progress = False
+    elif not total_length:
+        show_progress = True
+    elif total_length > (40 * 1000):
+        show_progress = True
+    else:
+        show_progress = False
+
+    chunks = response_chunks(resp, CONTENT_CHUNK_SIZE)
+
+    if not show_progress:
+        return chunks
+
+    return DownloadProgressProvider(
+        progress_bar, max=total_length
+    )(chunks)
+
+
+def sanitize_content_filename(filename):
+    # type: (str) -> str
     """
-    Download packages from:
-
-    - PyPI (and other indexes) using requirement specifiers.
-    - VCS project urls.
-    - Local project directories.
-    - Local or remote source archives.
-
-    pip also supports downloading from "requirements files", which provide
-    an easy way to specify a whole environment to be downloaded.
+    Sanitize the "filename" value from a Content-Disposition header.
     """
+    return os.path.basename(filename)
 
-    usage = """
-      %prog [options] <requirement specifier> [package-index-options] ...
-      %prog [options] -r <requirements file> [package-index-options] ...
-      %prog [options] <vcs project url> ...
-      %prog [options] <local project path> ...
-      %prog [options] <archive url/path> ..."""
 
-    def add_options(self):
-        # type: () -> None
-        self.cmd_opts.add_option(cmdoptions.constraints())
-        self.cmd_opts.add_option(cmdoptions.requirements())
-        self.cmd_opts.add_option(cmdoptions.build_dir())
-        self.cmd_opts.add_option(cmdoptions.no_deps())
-        self.cmd_opts.add_option(cmdoptions.global_options())
-        self.cmd_opts.add_option(cmdoptions.no_binary())
-        self.cmd_opts.add_option(cmdoptions.only_binary())
-        self.cmd_opts.add_option(cmdoptions.prefer_binary())
-        self.cmd_opts.add_option(cmdoptions.src())
-        self.cmd_opts.add_option(cmdoptions.pre())
-        self.cmd_opts.add_option(cmdoptions.require_hashes())
-        self.cmd_opts.add_option(cmdoptions.progress_bar())
-        self.cmd_opts.add_option(cmdoptions.no_build_isolation())
-        self.cmd_opts.add_option(cmdoptions.use_pep517())
-        self.cmd_opts.add_option(cmdoptions.no_use_pep517())
+def parse_content_disposition(content_disposition, default_filename):
+    # type: (str, str) -> str
+    """
+    Parse the "filename" value from a Content-Disposition header, and
+    return the default filename if the result is empty.
+    """
+    _type, params = cgi.parse_header(content_disposition)
+    filename = params.get('filename')
+    if filename:
+        # We need to sanitize the filename to prevent directory traversal
+        # in case the filename contains ".." path parts.
+        filename = sanitize_content_filename(filename)
+    return filename or default_filename
 
-        self.cmd_opts.add_option(
-            '-d', '--dest', '--destination-dir', '--destination-directory',
-            dest='download_dir',
-            metavar='dir',
-            default=os.curdir,
-            help=("Download packages into <dir>."),
+
+def _get_http_response_filename(resp, link):
+    # type: (Response, Link) -> str
+    """Get an ideal filename from the given HTTP response, falling back to
+    the link filename if not provided.
+    """
+    filename = link.filename  # fallback
+    # Have a look at the Content-Disposition header for a better guess
+    content_disposition = resp.headers.get('content-disposition')
+    if content_disposition:
+        filename = parse_content_disposition(content_disposition, filename)
+    ext = splitext(filename)[1]  # type: Optional[str]
+    if not ext:
+        ext = mimetypes.guess_extension(
+            resp.headers.get('content-type', '')
         )
+        if ext:
+            filename += ext
+    if not ext and link.url != resp.url:
+        ext = os.path.splitext(resp.url)[1]
+        if ext:
+            filename += ext
+    return filename
 
-        cmdoptions.add_target_python_options(self.cmd_opts)
 
-        index_opts = cmdoptions.make_option_group(
-            cmdoptions.index_group,
-            self.parser,
+def _http_get_download(session, link):
+    # type: (PipSession, Link) -> Response
+    target_url = link.url.split('#', 1)[0]
+    resp = session.get(target_url, headers=HEADERS, stream=True)
+    raise_for_status(resp)
+    return resp
+
+
+class Download(object):
+    def __init__(
+        self,
+        response,  # type: Response
+        filename,  # type: str
+        chunks,  # type: Iterable[bytes]
+    ):
+        # type: (...) -> None
+        self.response = response
+        self.filename = filename
+        self.chunks = chunks
+
+
+class Downloader(object):
+    def __init__(
+        self,
+        session,  # type: PipSession
+        progress_bar,  # type: str
+    ):
+        # type: (...) -> None
+        self._session = session
+        self._progress_bar = progress_bar
+
+    def __call__(self, link):
+        # type: (Link) -> Download
+        try:
+            resp = _http_get_download(self._session, link)
+        except NetworkConnectionError as e:
+            assert e.response is not None
+            logger.critical(
+                "HTTP error %s while getting %s", e.response.status_code, link
+            )
+            raise
+
+        return Download(
+            resp,
+            _get_http_response_filename(resp, link),
+            _prepare_download(resp, link, self._progress_bar),
         )
-
-        self.parser.insert_option_group(0, index_opts)
-        self.parser.insert_option_group(0, self.cmd_opts)
-
-    @with_cleanup
-    def run(self, options, args):
-        # type: (Values, List[str]) -> int
-
-        options.ignore_installed = True
-        # editable doesn't really make sense for `pip download`, but the bowels
-        # of the RequirementSet code require that property.
-        options.editables = []
-
-        cmdoptions.check_dist_restriction(options)
-
-        options.download_dir = normalize_path(options.download_dir)
-
-        ensure_dir(options.download_dir)
-
-        session = self.get_default_session(options)
-
-        target_python = make_target_python(options)
-        finder = self._build_package_finder(
-            options=options,
-            session=session,
-            target_python=target_python,
-        )
-        build_delete = (not (options.no_clean or options.build_dir))
-
-        req_tracker = self.enter_context(get_requirement_tracker())
-
-        directory = TempDirectory(
-            options.build_dir,
-            delete=build_delete,
-            kind="download",
-            globally_managed=True,
-        )
-
-        reqs = self.get_requirements(args, options, finder, session)
-
-        preparer = self.make_requirement_preparer(
-            temp_build_dir=directory,
-            options=options,
-            req_tracker=req_tracker,
-            session=session,
-            finder=finder,
-            download_dir=options.download_dir,
-            use_user_site=False,
-        )
-
-        resolver = self.make_resolver(
-            preparer=preparer,
-            finder=finder,
-            options=options,
-            py_version_info=options.python_version,
-        )
-
-        self.trace_basic_info(finder)
-
-        requirement_set = resolver.resolve(
-            reqs, check_supported_wheels=True
-        )
-
-        downloaded = ' '.join([req.name  # type: ignore
-                               for req in requirement_set.requirements.values()
-                               if req.successfully_downloaded])
-        if downloaded:
-            write_output('Successfully downloaded %s', downloaded)
-
-        return SUCCESS
