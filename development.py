@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from streamlit.web.cli import main
+"""Variables for dev purposes.
 
-if __name__ == "__main__":
-    # Set prog_name so that the Streamlit server sees the same command line
-    # string whether streamlit is called directly or via `python -m streamlit`.
-    main(prog_name="streamlit")
+The main purpose of this module (right now at least) is to avoid a dependency
+cycle between streamlit.config and streamlit.logger.
+"""
+
+is_development_mode = False

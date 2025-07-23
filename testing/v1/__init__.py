@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from streamlit.web.cli import main
+from streamlit.testing.v1.app_test import AppTest
 
-if __name__ == "__main__":
-    # Set prog_name so that the Streamlit server sees the same command line
-    # string whether streamlit is called directly or via `python -m streamlit`.
-    main(prog_name="streamlit")
+__all__ = ["AppTest"]

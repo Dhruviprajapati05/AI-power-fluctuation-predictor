@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from streamlit.web.cli import main
+from importlib.metadata import version as _version
+from typing import Final
 
-if __name__ == "__main__":
-    # Set prog_name so that the Streamlit server sees the same command line
-    # string whether streamlit is called directly or via `python -m streamlit`.
-    main(prog_name="streamlit")
+STREAMLIT_VERSION_STRING: Final[str] = _version("streamlit")

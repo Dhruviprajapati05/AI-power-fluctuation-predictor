@@ -12,9 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from streamlit.web.cli import main
+from streamlit.web.server.component_request_handler import ComponentRequestHandler
+from streamlit.web.server.routes import allow_cross_origin_requests
+from streamlit.web.server.server import Server, server_address_is_unix_socket
+from streamlit.web.server.stats_request_handler import StatsRequestHandler
 
-if __name__ == "__main__":
-    # Set prog_name so that the Streamlit server sees the same command line
-    # string whether streamlit is called directly or via `python -m streamlit`.
-    main(prog_name="streamlit")
+__all__ = [
+    "ComponentRequestHandler",
+    "allow_cross_origin_requests",
+    "Server",
+    "server_address_is_unix_socket",
+    "StatsRequestHandler",
+]

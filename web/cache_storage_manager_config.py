@@ -12,9 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from streamlit.web.cli import main
+from __future__ import annotations
 
-if __name__ == "__main__":
-    # Set prog_name so that the Streamlit server sees the same command line
-    # string whether streamlit is called directly or via `python -m streamlit`.
-    main(prog_name="streamlit")
+from typing import TYPE_CHECKING
+
+from streamlit.runtime.caching.storage.local_disk_cache_storage import (
+    LocalDiskCacheStorageManager,
+)
+
+if TYPE_CHECKING:
+    from streamlit.runtime.caching.storage import CacheStorageManager
+
+
+def create_default_cache_storage_manager() -> CacheStorageManager:
+    """
+    Get the cache storage manager.
+    It would be used both in server.py and in cli.py to have unified cache storage
+
+    Returns
+    -------
+    CacheStorageManager
+        The cache storage manager.
+
+    """
+    return LocalDiskCacheStorageManager()
