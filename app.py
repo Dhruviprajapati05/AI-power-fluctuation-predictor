@@ -8,7 +8,7 @@ model = joblib.load("voltage_classifier_model.pkl")
 encoder = joblib.load("label_encoder.pkl")
 
 # Load dataset to calculate mean & std
-data = pd.read_csv("Project_Dataset_clean.csv")
+data = pd.read_csv("Project_Dataset_Clean.csv")
 stable_voltages = data[data["Label"] == "Stable"]["Voltage"]
 kappa = stable_voltages.mean()
 sigma = stable_voltages.std()
