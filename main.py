@@ -10,7 +10,7 @@ model = joblib.load("voltage_classifier_model.pkl")
 encoder = joblib.load("label_encoder.pkl")
 
 # Load clean dataset
-data = pd.read_csv("Project_Dataset_clean.csv")
+data = pd.read_csv("Project_Dataset_Clean.csv")
 
 # Step 1: Get voltage stats from stable class
 stable_voltages = data[data["Label"] == "Stable"]["Voltage"]
