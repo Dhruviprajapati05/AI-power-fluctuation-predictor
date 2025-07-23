@@ -5,7 +5,7 @@ from sklearn.preprocessing import LabelEncoder
 import joblib
 
 # Load clean dataset
-df = pd.read_csv("Project_Dataset_Clean.csv")
+df = pd.read_csv("Project_Dataset_clean.csv")
 
 # Encode labels
 le = LabelEncoder()
